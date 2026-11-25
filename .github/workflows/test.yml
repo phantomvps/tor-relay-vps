@@ -1,0 +1,65 @@
+name: test
+on: [push, workflow_dispatch]
+jobs:
+  run:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash   # = bash -eo pipefail
+    steps:
+      - uses: actions/checkout@v4
+      - name: syntax + shellcheck
+        run: |
+          bash -n tor-relay-vps.sh
+          shellcheck -S warning tor-relay-vps.sh
+      - name: help
+        run: bash tor-relay-vps.sh --help
+      - name: bad input is refused
+        run: |
+          if sudo bash tor-relay-vps.sh --nickname ok --yes; then echo 'expected a failure (no contact)'; exit 1; fi
+          if sudo bash tor-relay-vps.sh --nickname 'bad-name' --contact ci@example.com --yes; then echo 'expected a failure'; exit 1; fi
+          if sudo bash tor-relay-vps.sh --nickname ThisNicknameIsTooLong1 --contact ci@example.com --yes; then echo 'expected a failure'; exit 1; fi
+          if sudo bash tor-relay-vps.sh --nickname ok --contact 'a # b' --yes; then echo 'expected a failure'; exit 1; fi
+          if sudo bash tor-relay-vps.sh --nickname ok --contact ci@example.com --bandwidth-rate lots --yes; then echo 'expected a failure'; exit 1; fi
+          if sudo bash tor-relay-vps.sh --nickname ok --contact ci@example.com --orport 70000 --yes; then echo 'expected a failure'; exit 1; fi
+      - name: turn on ufw (to test the port opening)
+        run: |
+          sudo apt-get update -q && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q ufw
+          sudo ufw allow 22/tcp && sudo ufw --force enable
+      # --no-publish: CI runners must not announce themselves to the real Tor network
+      - name: full run
+        run: sudo bash tor-relay-vps.sh --nickname PhantomCiTest --contact ci@example.com --bandwidth-rate "1 MB" --bandwidth-burst "2 MB" --no-publish --yes
+      - name: checks
+        run: |
+          grep -qx 'ExitPolicy reject \*:\*' /etc/tor/torrc
+          grep -qx 'ExitRelay 0' /etc/tor/torrc
+          grep -qx 'Nickname PhantomCiTest' /etc/tor/torrc
+          grep -qx 'RelayBandwidthRate 1 MB' /etc/tor/torrc
+          systemctl is-active tor@default
+          apt-cache policy tor > /tmp/policy.txt; cat /tmp/policy.txt
+          grep -A1 '^ \*\*\*' /tmp/policy.txt | grep deb.torproject.org > /dev/null   # installed from the Tor Project repo
+          test -s /usr/share/keyrings/deb.torproject.org-keyring.gpg
+          sudo ufw status | grep '9001/tcp.*ALLOW' > /dev/null
+          for i in $(seq 1 30); do sudo ss -ltn | grep ':9001 ' > /dev/null && break; sleep 2; done
+          sudo ss -ltn | grep ':9001 ' > /dev/null
+          sudo test -s /var/lib/tor/fingerprint
+          sudo tor --verify-config --defaults-torrc /usr/share/tor/tor-service-defaults-torrc -f /etc/tor/torrc --RunAsDaemon 0
+      - name: second run is safe (no restart, same identity)
+        run: |
+          fp="$(sudo cat /var/lib/tor/fingerprint)"; pid="$(systemctl show -p MainPID --value tor@default)"
+          sudo bash tor-relay-vps.sh --nickname PhantomCiTest --contact ci@example.com --bandwidth-rate "1 MB" --bandwidth-burst "2 MB" --no-publish --yes | tee /tmp/out2.txt
+          grep -q 'unchanged' /tmp/out2.txt
+          test "$pid" = "$(systemctl show -p MainPID --value tor@default)"
+          test "$fp" = "$(sudo cat /var/lib/tor/fingerprint)"
+      - name: changing a setting restarts tor and keeps the identity
+        run: |
+          fp="$(sudo cat /var/lib/tor/fingerprint)"
+          sudo bash tor-relay-vps.sh --nickname PhantomCiTest --contact ci@example.com --no-publish --yes
+          if grep -q RelayBandwidthRate /etc/tor/torrc; then echo 'old limit still set'; exit 1; fi
+          sleep 3; systemctl is-active tor@default
+          test "$fp" = "$(sudo cat /var/lib/tor/fingerprint)"
+          sudo test -f /etc/tor/torrc.before-tor-relay-vps
