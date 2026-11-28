@@ -64,9 +64,9 @@ tested in CI.
 
 ## Need a server?
 
-Maintained by the team behind [PhantomVPS](https://phantomvps.com): VPS and dedicated servers with root access,
+Maintained by the team behind [PhantomVPS](https://phantomvps.com?ref=github): VPS and dedicated servers with root access,
 no ID documents, paid with Monero, Bitcoin, Litecoin, USDT, USDC, SOL or TRX.
-See [Tor relay hosting](https://phantomvps.com/tor-relay-hosting).
+See [Tor relay hosting](https://phantomvps.com/tor-relay-hosting?ref=github).
 
 ## License
 
